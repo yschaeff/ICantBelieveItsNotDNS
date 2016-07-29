@@ -12,3 +12,7 @@ all: $(OBJECTS)
 	$(CC) _tmp $(DST):/$<
 	rm _tmp
 	touch $@
+
+clean:
+	rm -f $(OBJECTS)
+
