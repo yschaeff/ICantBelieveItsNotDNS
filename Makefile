@@ -8,5 +8,7 @@ OBJECTS=$(SOURCES:.py=.o)
 
 all: $(OBJECTS)
 %.o: %.py
-	$(CC) $< $(DST):/
+	cat $< | python3 scrub.py > _tmp
+	$(CC) _tmp $(DST):/
+	rm _tmp
 	touch $@
