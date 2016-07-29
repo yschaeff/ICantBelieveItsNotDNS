@@ -3,8 +3,8 @@ DST=10.0.0.138
 SOURCES=main.py boot.py trusted_networks.py net_utils.py
 OBJECTS=$(SOURCES:.py=.o)
 
-.NOTPARALLEL: %.o list wipe
-#.PHONY: list wipe clean
+.NOTPARALLEL: %.o #list wipe
+.PHONY: test clean #list wipe
 
 all: $(OBJECTS)
 %.o: %.py
@@ -15,4 +15,7 @@ all: $(OBJECTS)
 
 clean:
 	rm -f $(OBJECTS)
+
+test:
+	dig @$(DST) hello
 

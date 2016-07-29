@@ -1,5 +1,5 @@
 import machine
-import time
+import time, sys
 import socket
 import micropython as u
 
@@ -9,32 +9,21 @@ import net_utils
 from trusted_networks import NETWORKS
 net_utils.connect_to_ap(NETWORKS)
 
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+## Open socket.
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+## bind to first IF. Fine I guess.
 addr = socket.getaddrinfo('0.0.0.0', 53)[0][-1]
 s.bind(addr)
-s.listen(1)
-i = 0
-while 1:
+
+while 1: #while not recv packet of death ;)
     try:
-        cl, addr = s.accept()
-        #print(addr)
-        #print(cl)
-        m = cl.recv(100)
-        cl.write(m)
-        cl.close()
-        #print("free %d"% gc.mem_free(), i)
-        #u.mem_info()
-        i = i+1
-        #time.sleep_ms(50)
-        #del cl
-        #del addr
-        #del m
-        #gc.collect()
-        #print(m)
-        if i > 50:
-            time.sleep(2)
-            i = 0
-    except:
-        print("err in network stuffz")
-        #machine.reset()
-print("hallo wereld")
+        m, addr = s.recvfrom(1024)
+        #print("rcv pkt, sending to", str(addr), repr(addr))
+        s.sendto(m, addr)
+    except OSError as e:
+        print("OSError: {0}".format(e))
+        ## if the query rate is too high the ESP can't keep up
+        ## sleep for a bit and hope for better times
+        time.sleep(2)
+    except Exception as e:
+        print("Exception: {0}".format(e), type(e))
