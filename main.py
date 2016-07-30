@@ -16,6 +16,9 @@ TYPE_REPLY=1
 STAT_NOERR = 0
 STAT_REFUSED = 5
 
+TYPE_AXFR = 252
+CLASS_IN = 1
+
 def create_msg(qid, mtype, rep_code, rr_q, rr_a):
     msg = b''
     msg += encode_bigendian(qid, 2)
@@ -26,30 +29,50 @@ def create_msg(qid, mtype, rep_code, rr_q, rr_a):
     msg += encode_bigendian(0, 2)
     msg += encode_bigendian(0, 2)
 
-    sch = 0x0973636861656666657202746b0000fc0001
-    msg += encode_bigendian(sch, 18)
+    for rr in rr_q:
+        msg += rr
+    for rr in rr_a:
+        msg += rr
     return msg
 
 def wrap_tcp(msg):
     # uPy doesn't support endianess yet...
     return encode_bigendian(len(msg), 2) + msg
 
-zones = ["schaeffer.tk"]
-master = "10.0.0.10"
-axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-axfr_sock.connect((master, 53))
+def name_to_wire(name):
+    wire = b''
+    for token in name.split('.'):
+        wire += bytes(chr(len(token)) + token, 'utf8')
+    wire += b'\x00'
+    return wire
 
-m = create_msg(42, TYPE_QUERY, STAT_NOERR, [""], [])
-m = wrap_tcp(m)
-print("sending...", list(map(hex, m)))
-axfr_sock.sendall(m)
-print("recv...")
-m = axfr_sock.read(2)
-readlen = decode_bigendian(m)
-m = axfr_sock.read(readlen)
-print("XFR DONE!")
-#print("DATA:", m)
-axfr_sock.close()
+def make_query_rr(qowner, qtype, qclass):
+    return name_to_wire(qowner) + encode_bigendian(qtype, 2) + \
+        encode_bigendian(qclass, 2)
+
+def axfr(master, zone):
+    ## a AXFR might be very big. We can just return all
+    ## we must process on the fly.
+
+    print("Requesting AXFR for", zone, "from", master)
+    axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    axfr_sock.connect((master, 53))
+
+    m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
+            [make_query_rr(zone, TYPE_AXFR, CLASS_IN)], [])
+    m = wrap_tcp(m)
+    axfr_sock.sendall(m)
+    print("Waiting for AXFR relpy")
+    m = axfr_sock.read(2)
+    readlen = decode_bigendian(m)
+    print("recieving", readlen, "bytes")
+    m = axfr_sock.read(100)
+    #m = axfr_sock.read(readlen)
+    print("XFR done!")
+    axfr_sock.close()
+    return m
+
+axfr_msg = axfr("10.0.0.10", "schaeffer.tk")
 
 #def parse(msg):
     #qid = msg[0]<<8 | msg[1]
