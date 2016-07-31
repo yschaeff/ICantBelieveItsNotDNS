@@ -126,7 +126,7 @@ class RRiter:
             payload = self.sock.read(2)
             datalen = decode_bigendian(payload)
             payload += self.sock.read(datalen)
-        return name, qtype, qclass, ttl, payload
+        return i, name, qtype, qclass, ttl, payload
 
 def axfr(master, zone):
     ## a AXFR might be very big. We can just return all
@@ -158,9 +158,11 @@ except OSError as ex:
 
 def weedwacker(rr):
     # delete !IN RRSIG DNSKEY NSEC NSEC3 NSEC3PARAM
-    if decode_bigendian(rr[2]) != 1: #only IN allowed
+    if rr[0] != 1:
         return False
-    qtype = decode_bigendian(rr[1])
+    if decode_bigendian(rr[3]) != 1: #only IN allowed
+        return False
+    qtype = decode_bigendian(rr[2])
     if qtype in [TYPE_RRSIG, TYPE_DNSKEY, TYPE_NSEC, TYPE_NSEC3, TYPE_NSEC3PARAM]:
         return False
     return True
