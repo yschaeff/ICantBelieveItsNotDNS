@@ -17,6 +17,12 @@ STAT_NOERR = 0
 STAT_REFUSED = 5
 
 TYPE_AXFR = 252
+TYPE_RRSIG = 46
+TYPE_NSEC = 47
+TYPE_DNSKEY = 48
+TYPE_NSEC3 = 50
+TYPE_NSEC3PARAM = 51
+
 CLASS_IN = 1
 
 def create_msg(qid, mtype, rep_code, rr_q, rr_a):
@@ -79,11 +85,8 @@ def read_owner_buffered(buf1, offset1, buf2, offset2, jmp):
 
 ## contract: exactly 0 bytes must be read from name
 class RRiter:
-    def __init__(self, sock, max_ptr):
+    def __init__(self, sock):
         self.sock = sock
-        self.head = b''
-        self.tail = b''
-        self.max_ptr = max_ptr
 
     def __iter__(self):
 	## seek to answer section
@@ -93,8 +96,6 @@ class RRiter:
         au_count = decode_bigendian(self.sock.read(2))
         ad_count = decode_bigendian(self.sock.read(2))
         self.counts = [qu_count, an_count, au_count, ad_count]
-        self.head_start = 12
-        self.tail_start = 12
         return self
 
     def __next__(self):
@@ -106,47 +107,18 @@ class RRiter:
             raise StopIteration
 
         self.counts[i] -= 1
-        #parse RR
-        ## read first byte. This is eiter length of compression.
         name = b''
         while True: #loop per label
             b = self.sock.read(1)
-            #self.buf += b
-            self.head += b
-            self.tail += b
-            #print("loop", b, name, self.buf)
-            #time.sleep(2)
-            if (ord(b)&0xC0) == 0xC0:
-                #the rest can be read uncompressed
-                jmp = self.sock.read(1)
-                #self.buf += jmp
-                self.head += b
-                self.tail += b
-                jmp = ((ord(b)^0xC0)<<8)|ord(jmp)
-                try:
-                    name += read_owner_buffered(self.head, self.head_start, self.tail, self.tail_start, jmp)
-                except:
-                    #print("NAME TRUNCATED!")
-                    name = b'0x00'
-                break
             name += b
-            if ord(b) == 0x00: # we are done
+            if (ord(b)&0xC0) == 0xC0:
+                name += self.sock.read(1)
                 break
-            elif ord(b) > 0xC0:
-                print("can't be a label")
-                self.sock.close()
-                raise StopIteration
-            else:
-                #read label
-                b = self.sock.read(ord(b))
-                name += b
-                #self.buf += b
-                self.head += b
-                self.tail += b
+            if ord(b) == 0x00:
+                break
+            name += self.sock.read(ord(b)&0x3F)
         qtype = self.sock.read(2)
         qclass = self.sock.read(2)
-        self.head += qtype + qclass
-        self.tail += qtype + qclass
         ttl = None
         payload = None
         if i != 0:
@@ -154,14 +126,6 @@ class RRiter:
             payload = self.sock.read(2)
             datalen = decode_bigendian(payload)
             payload += self.sock.read(datalen)
-            self.head += ttl + payload
-            self.tail += ttl + payload
-        #only need to buffer 256 first bytes
-        self.head = self.head[:self.max_ptr]
-        if len(self.tail) > self.max_ptr:
-            cut = len(self.tail) - self.max_ptr
-            self.tail = self.tail[cut:]
-            self.tail_start += cut
         return name, qtype, qclass, ttl, payload
 
 def axfr(master, zone):
@@ -182,7 +146,7 @@ def axfr(master, zone):
     print("Recieving", readlen, "bytes")
     qid = decode_bigendian(axfr_sock.read(2))
     flags = decode_bigendian(axfr_sock.read(2))
-    return RRiter(axfr_sock, 350)
+    return RRiter(axfr_sock)
 
 try:
     axfr_iter = axfr("10.0.0.10", "schaeffer.tk")
@@ -192,9 +156,17 @@ except OSError as ex:
     time.sleep(5)
     machine.reset()
 
-for RR in axfr_iter:
-    continue
-    print(RR[0])
+def weedwacker(rr):
+    # delete !IN RRSIG DNSKEY NSEC NSEC3 NSEC3PARAM
+    if decode_bigendian(rr[2]) != 1: #only IN allowed
+        return False
+    qtype = decode_bigendian(rr[1])
+    if qtype in [TYPE_RRSIG, TYPE_DNSKEY, TYPE_NSEC, TYPE_NSEC3, TYPE_NSEC3PARAM]:
+        return False
+    return True
+
+for RR in filter(weedwacker, axfr_iter):
+    print(RR)
 
 while 1: #while not recv packet of death ;)
     try:
