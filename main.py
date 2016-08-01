@@ -1,7 +1,6 @@
 import machine
 import time, sys
 import socket
-import micropython as u
 from net_utils import encode_bigendian, decode_bigendian
 
 #Open UDP socket.
@@ -55,33 +54,6 @@ def name_to_wire(name):
 def make_query_rr(qowner, qtype, qclass):
     return name_to_wire(qowner) + encode_bigendian(qtype, 2) + \
         encode_bigendian(qclass, 2)
-
-def read_owner_buffered(buf1, offset1, buf2, offset2, jmp):
-    name = b''
-    if jmp >= offset2:
-        buf = buf2
-        offset = offset2
-    else:
-        buf = buf1
-        offset = offset1
-        if jmp>offset1 + len(buf) and abs(jmp-offset1) > abs(jmp-offset2):
-            buf = buf2
-            offset = offset2
-    jmp -= offset
-    print(jmp)
-    if jmp < 0 or jmp >= len(buf):
-        #print("invalid jmp %d free %d"%(jmp, gc.mem_free()))
-        raise Exception("invalid jump %d"%jmp)
-        
-    while 1:
-        val = buf[jmp]
-        if val & 0xC0 == 0xC0: #jump!
-            jmp = ((val^0xC0)<<8)|buf[jmp+1]
-            return name+read_owner_buffered(buf1, offset1, buf2, offset2, jmp)
-        name += buf[jmp: jmp+1+buf[jmp]]
-        jmp += 1 + buf[jmp]
-        if val == 0x00:
-            return name
 
 ## contract: exactly 0 bytes must be read from name
 class RRiter:
@@ -148,13 +120,44 @@ def axfr(master, zone):
     flags = decode_bigendian(axfr_sock.read(2))
     return RRiter(axfr_sock)
 
-try:
-    axfr_iter = axfr("10.0.0.10", "schaeffer.tk")
-except OSError as ex:
-    print("OSError: {0}".format(e))
-    print("Failed to obtain AXFR, rebooting in 5 seconds")
-    time.sleep(5)
-    machine.reset()
+def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
+    print("Requesting AXFR for", zone, "from", master)
+    axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    axfr_sock.connect((master, 53))
+
+    m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
+            [make_query_rr(zone, TYPE_AXFR, CLASS_IN)], [])
+    m = wrap_tcp(m)
+    axfr_sock.sendall(m)
+    print("Waiting for AXFR reply")
+    m = axfr_sock.read(2)
+    readlen = decode_bigendian(m)
+    print("Recieving", readlen, "bytes")
+    i = 0
+    while ptrs_to_reslv:
+        p = ptrs_to_reslv.pop(0)
+        if p < i:
+            #we passed it :( unlikely, but possible
+            continue
+        while i < p:
+            axfr_sock.read(1)
+            i += 1
+        #read labels until 0 or ptr
+        name = b''
+        while 1:
+            b = axfr_sock.read(1)
+            i += 1
+            if ord(b)&0xC0 == 0xC0:
+                ptrs[p] = name + b + axfr_sock.read(1)
+                i += 1
+                break
+            elif ord(b) == 0x00:
+                ptrs[p] = name + b
+                break
+            else:
+                name += b + axfr_sock.read(ord(b))
+                i += ord(b)
+    axfr_sock.close()
 
 def weedwacker(rr):
     # delete !IN RRSIG DNSKEY NSEC NSEC3 NSEC3PARAM
@@ -167,19 +170,78 @@ def weedwacker(rr):
         return False
     return True
 
-for RR in filter(weedwacker, axfr_iter):
-    print(RR)
+def uncompress(qowner, ptrs, ptrs_reslv):
+    # tries to uncompress name. return name. else return null and add to ptrs
+    name = b''
+    while 1:
+        b = qowner[0]
+        if b&0xC0 == 0xC0:
+            jmp = ((b&0x3F)<<8) | qowner[1]
+            if jmp in ptrs:
+                qowner = ptrs[jmp] + qowner[2:]
+            else:
+                ptrs_reslv.add(jmp)
+                return name + qowner, False
+        elif b == 0x00:
+            return name + chr(b), True
+        else:
+            name += qowner[0: b+1]
+            qowner = qowner[b+1:]
 
-while 1: #while not recv packet of death ;)
-    try:
-        m, addr = s.recvfrom(1024)
-        #print("rcv pkt, sending to", str(addr), repr(addr))
-        s.sendto(m, addr)
-        #parse(m)
-    except OSError as e:
-        print("OSError: {0}".format(e))
-        ## if the query rate is too high the ESP can't keep up
-        ## sleep for a bit and hope for better times
-        time.sleep(2)
-    except Exception as e:
-        print("Exception: {0}".format(e), type(e))
+try:
+    axfr_iter = axfr("10.0.0.10", "schaeffer.tk")
+except OSError as ex:
+    print("OSError: {0}".format(e))
+    print("Failed to obtain AXFR, rebooting in 5 seconds")
+    time.sleep(5)
+    machine.reset()
+
+## we will now resolve compression ptrs by doing a axfr!
+db = {}
+to_resolve = {}
+ptrs = {}
+ptrs_reslv = set()
+
+
+for rr in filter(weedwacker, axfr_iter):
+    _, qowner, qtype, _, ttl, rdata = rr
+    name, done = uncompress(qowner, ptrs, ptrs_reslv)
+    if done:
+        db[(name, qtype)] = (ttl, rdata)
+    else:
+        to_resolve[(name, qtype)] = (ttl, rdata)
+
+    #print(rr)
+
+#print(db, to_resolve, ptrs, ptrs_reslv)
+
+while ptrs_reslv:
+    axfr_reslv_ptrs("10.0.0.10", "schaeffer.tk", ptrs, sorted(list(ptrs_reslv)))
+    for p in ptrs.keys():
+        if p in ptrs_reslv:
+            ptrs_reslv.remove(p)
+
+    for k,v in to_resolve.items():
+        name, done = uncompress(k[0], ptrs, ptrs_reslv)
+        if done:
+            db[(name, k[1])] = v
+            to_resolve.pop(k)
+
+print(db)
+
+
+
+
+#while 1: #while not recv packet of death ;)
+    #try:
+        #m, addr = s.recvfrom(1024)
+        ##print("rcv pkt, sending to", str(addr), repr(addr))
+        #s.sendto(m, addr)
+        ##parse(m)
+    #except OSError as e:
+        #print("OSError: {0}".format(e))
+        ### if the query rate is too high the ESP can't keep up
+        ### sleep for a bit and hope for better times
+        #time.sleep(2)
+    #except Exception as e:
+        #print("Exception: {0}".format(e), type(e))
