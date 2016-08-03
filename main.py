@@ -1,13 +1,6 @@
-import machine
-import time, sys
-import socket
+import machine, sys, socket, gc
+from time import sleep
 from net_utils import encode_bigendian, decode_bigendian
-
-#Open UDP socket.
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#bind to first IF. Fine I guess.
-addr = socket.getaddrinfo('0.0.0.0', 53)[0][-1]
-s.bind(addr)
 
 TYPE_QUERY=0
 TYPE_REPLY=1
@@ -16,17 +9,9 @@ STAT_NOERR = 0
 STAT_REFUSED = 5
 
 TYPE_AXFR = 252
-TYPE_RRSIG = 46
-TYPE_NSEC = 47
-TYPE_DNSKEY = 48
-TYPE_NSEC3 = 50
-TYPE_NSEC3PARAM = 51
-
-CLASS_IN = 1
 
 def create_msg(qid, mtype, rep_code, rr_q, rr_a):
-    msg = b''
-    msg += encode_bigendian(qid, 2)
+    msg = encode_bigendian(qid, 2)
     flags = 0 | (mtype<<15) | (1<<5)
     msg += encode_bigendian(flags, 2)
     msg += encode_bigendian(len(rr_q), 2)
@@ -34,9 +19,7 @@ def create_msg(qid, mtype, rep_code, rr_q, rr_a):
     msg += encode_bigendian(0, 2)
     msg += encode_bigendian(0, 2)
 
-    for rr in rr_q:
-        msg += rr
-    for rr in rr_a:
+    for rr in rr_q + rr_a:
         msg += rr
     return msg
 
@@ -109,7 +92,7 @@ def axfr(master, zone):
     axfr_sock.connect((master, 53))
 
     m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
-	    [make_query_rr(zone, TYPE_AXFR, CLASS_IN)], [])
+	    [make_query_rr(zone, TYPE_AXFR, 1)], [])
     m = wrap_tcp(m)
     axfr_sock.sendall(m)
     print("Waiting for AXFR reply")
@@ -126,7 +109,7 @@ def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
     axfr_sock.connect((master, 53))
 
     m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
-            [make_query_rr(zone, TYPE_AXFR, CLASS_IN)], [])
+            [make_query_rr(zone, TYPE_AXFR, 1)], [])
     m = wrap_tcp(m)
     axfr_sock.sendall(m)
     print("Waiting for AXFR reply")
@@ -160,15 +143,12 @@ def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
     axfr_sock.close()
 
 def weedwacker(rr):
-    # delete !IN RRSIG DNSKEY NSEC NSEC3 NSEC3PARAM
-    if rr[0] != 1:
+    if rr[0] != 1: #from ans section only
         return False
     if decode_bigendian(rr[3]) != 1: #only IN allowed
         return False
     qtype = decode_bigendian(rr[2])
-    if qtype in [TYPE_RRSIG, TYPE_DNSKEY, TYPE_NSEC, TYPE_NSEC3, TYPE_NSEC3PARAM]:
-        return False
-    return True
+    return not (qtype in [46, 47, 48, 50, 51]) #no dnssec
 
 def uncompress(qowner, ptrs, ptrs_reslv):
     # tries to uncompress name. return name. else return null and add to ptrs
@@ -188,12 +168,13 @@ def uncompress(qowner, ptrs, ptrs_reslv):
             name += qowner[0: b+1]
             qowner = qowner[b+1:]
 
+# do stuff in functions to benefit GC
 try:
     axfr_iter = axfr("10.0.0.10", "schaeffer.tk")
 except OSError as ex:
     print("OSError: {0}".format(e))
     print("Failed to obtain AXFR, rebooting in 5 seconds")
-    time.sleep(5)
+    sleep(5)
     machine.reset()
 
 ## we will now resolve compression ptrs by doing a axfr!
@@ -229,19 +210,31 @@ while ptrs_reslv:
 
 print(db)
 
+del to_resolve
+del ptrs
+del ptrs_reslv
+del axfr_iter
+del rr
+
+gc.collect()
+
+#Open UDP socket.
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+#bind to first IF. Fine I guess.
+addr = socket.getaddrinfo('0.0.0.0', 53)[0][-1]
+s.bind(addr)
 
 
-
-#while 1: #while not recv packet of death ;)
-    #try:
-        #m, addr = s.recvfrom(1024)
-        ##print("rcv pkt, sending to", str(addr), repr(addr))
-        #s.sendto(m, addr)
-        ##parse(m)
-    #except OSError as e:
-        #print("OSError: {0}".format(e))
-        ### if the query rate is too high the ESP can't keep up
-        ### sleep for a bit and hope for better times
-        #time.sleep(2)
-    #except Exception as e:
-        #print("Exception: {0}".format(e), type(e))
+while 1: #while not recv packet of death ;)
+    try:
+        m, addr = s.recvfrom(1024)
+        #print("rcv pkt, sending to", str(addr), repr(addr))
+        s.sendto(m, addr)
+        #parse(m)
+    except OSError as e:
+        print("OSError: {0}".format(e))
+        ## if the query rate is too high the ESP can't keep up
+        ## sleep for a bit and hope for better times
+        sleep(2)
+    except Exception as e:
+        print("Exception: {0}".format(e), type(e))
