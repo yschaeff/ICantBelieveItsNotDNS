@@ -32,10 +32,6 @@ def create_msg(qid, rr):
     msg += encode_bigendian(0, 6)       # empty other sections
     return msg + rr
 
-def wrap_tcp(msg):
-    # uPy doesn't support endianess yet...
-    return encode_bigendian(len(msg), 2) + msg
-
 def name_to_wire(name):
     wire = b''
     for token in name.split('.'):
@@ -54,7 +50,6 @@ class RRiter:
 
     def __iter__(self):
 	## seek to answer section
-        ## idea: make a next section()
         qu_count = decode_bigendian(self.sock.read(2))
         an_count = decode_bigendian(self.sock.read(2))
         au_count = decode_bigendian(self.sock.read(2))
@@ -64,12 +59,10 @@ class RRiter:
 
     def __next__(self):
         for i, c in enumerate(self.counts):
-            if c != 0:
-                break
+            if c != 0: break
         else:
             self.sock.close()
             raise StopIteration
-
         self.counts[i] -= 1
         name = b''
         while True: #loop per label
@@ -92,39 +85,26 @@ class RRiter:
             payload += self.sock.read(datalen)
         return i, name, qtype, qclass, ttl, payload
 
-def axfr(master, zone):
-    ## a AXFR might be very big. We can just return all
-    ## we must process on the fly.
-
+def open_axfr(master, zone):
     print("Requesting AXFR for", zone, "from", master)
     axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     axfr_sock.connect((master, 53))
-
-    m = create_msg(42, STAT_NOERR, \
-	    [make_query_rr(zone, TYPE_AXFR, 1)], [])
-    m = wrap_tcp(m)
+    m = create_msg(42, make_query_rr(zone, TYPE_AXFR, 1))
+    m = encode_bigendian(len(m), 2) + m #we need len for TCP.
     axfr_sock.sendall(m)
-    print("Waiting for AXFR reply")
-    m = axfr_sock.read(2)
-    readlen = decode_bigendian(m)
-    print("Recieving", readlen, "bytes")
+    axfr_sock.read(2) #aint nobody got mem for that.
+    return axfr_sock
+
+def axfr(master, zone):
+    ## an AXFR might be very big. We can just return all
+    ## we must process on the fly.
+    axfr_sock = open_axfr(master, zone)
     qid = decode_bigendian(axfr_sock.read(2))
     flags = decode_bigendian(axfr_sock.read(2))
     return RRiter(axfr_sock)
 
 def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
-    print("Requesting AXFR for", zone, "from", master)
-    axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    axfr_sock.connect((master, 53))
-
-    m = create_msg(42, STAT_NOERR, \
-            [make_query_rr(zone, TYPE_AXFR, 1)], [])
-    m = wrap_tcp(m)
-    axfr_sock.sendall(m)
-    print("Waiting for AXFR reply")
-    m = axfr_sock.read(2)
-    readlen = decode_bigendian(m)
-    print("Recieving", readlen, "bytes")
+    axfr_sock = open_axfr(master, zone)
     i = 0
     while ptrs_to_reslv:
         p = ptrs_to_reslv.pop(0)
