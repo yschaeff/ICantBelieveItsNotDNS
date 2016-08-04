@@ -141,7 +141,6 @@ def weedwacker(rr):
 
 def uncompress(qowner, ptrs, ptrs_reslv):
     # tries to uncompress name. return name. else return null and add to ptrs
-    i = 0
     name = b''
     while 1:
         b = qowner[0]
@@ -211,34 +210,32 @@ start()
 while 1: #while not recv packet of death ;)
     try:
         m, addr = s.recvfrom(1024)
-        mv = memoryview(m)
         #print("rcv pkt, sending to", str(addr), repr(addr))
         # find qname, from 
         end = 12
-        while mv[end] != 0:
-            end += mv[end] + 1
-        qname = mv[12:end+1]
+        while m[end] != 0:
+            end += m[end] + 1
+        qname = m[12:end+1]
         # find qtype
-        qtype = mv[end+1:end+3]
+        qtype = m[end+1:end+3]
         # now steal first 12 + (end-12) + 4 bytes of msg
         # set response code and append RR 
         resp = bytearray(m[:end+5])
         resp[2] = (resp[2]&0x01)|0x84 # is reply
         resp[3] &= 0x10
-        if (bytes(qname), bytes(qtype)) in db: #note: do cnames!
-            resp[7] = 0x01
-            resp += b'\xC0\x0C'
-            resp += bytes(qtype)
-            resp += b'\x00\x01'
-            resp += b'\x00\x00\x03\x84'
-            rdata = db[bytes(qname), bytes(qtype)]
-            resp += rdata
-        elif (bytes(qname), b'\x00\x05') in db: #note: do cnames!
-            print("CNAME!")
-            pass
-        else:
-            print("NXD")
+        rdata = db.get((qname, qtype))
+        if not rdata: #look for cname then
+            rdata = db.get((qname, b'\x00\x05'))
+            qtype = b'\x00\x05'
+        if not rdata: #NXD
             resp[3] |= 0x03 # NXD
+        else:
+            resp[7] = 0x01 #always 1 anser
+            resp += b'\xC0\x0C' #always point to question for qname
+            resp += qtype
+            resp += b'\x00\x01' # IN
+            resp += b'\x00\x00\x03\x84' #900S TTL
+            resp += rdata
         for i in range(8, 12): # no other records
             resp[i] = 0
         s.sendto(resp, addr)
