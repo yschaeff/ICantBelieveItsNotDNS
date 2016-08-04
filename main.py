@@ -141,6 +141,7 @@ def weedwacker(rr):
 
 def uncompress(qowner, ptrs, ptrs_reslv):
     # tries to uncompress name. return name. else return null and add to ptrs
+    i = 0
     name = b''
     while 1:
         b = qowner[0]
@@ -163,7 +164,7 @@ def pop_db(host, zone):
     except OSError as e:
         print("OSError: {0}, rebooting".format(e))
         sleep(5)
-        machine.reset()
+        reset()
 
     ## we will now resolve compression ptrs by doing a axfr!
     db = {}
@@ -194,7 +195,8 @@ def pop_db(host, zone):
 
     return db
 
-db = pop_db("10.0.0.10", "schaeffer.tk")
+#db = pop_db("10.0.0.10", "schaeffer.tk")
+db = pop_db("83.162.28.200", "schaeffer.tk")
 for rr in db:
     print(rr[0], decode_bigendian(rr[1]))
 
@@ -221,16 +223,23 @@ while 1: #while not recv packet of death ;)
         # now steal first 12 + (end-12) + 4 bytes of msg
         # set response code and append RR 
         resp = bytearray(m[:end+5])
-        resp[2] = 0x80 # is reply
+        resp[2] = (resp[2]&0x01)|0x84 # is reply
+        resp[3] &= 0x10
         if (bytes(qname), bytes(qtype)) in db: #note: do cnames!
-            pass
+            resp[7] = 0x01
+            resp += b'\xC0\x0C'
+            resp += bytes(qtype)
+            resp += b'\x00\x01'
+            resp += b'\x00\x00\x03\x84'
+            rdata = db[bytes(qname), bytes(qtype)]
+            resp += rdata
         elif (bytes(qname), b'\x00\x05') in db: #note: do cnames!
             print("CNAME!")
             pass
         else:
             print("NXD")
-            resp[3] = 0x03 # NXD
-        for i in range(6, 12): # no other records
+            resp[3] |= 0x03 # NXD
+        for i in range(8, 12): # no other records
             resp[i] = 0
         s.sendto(resp, addr)
     except OSError as e:
