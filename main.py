@@ -1,27 +1,36 @@
-import machine, sys, socket, gc
+import socket
 from time import sleep
-from net_utils import encode_bigendian, decode_bigendian
-
-TYPE_QUERY=0
-TYPE_REPLY=1
+from machine import reset
 
 STAT_NOERR = 0
 STAT_REFUSED = 5
 
 TYPE_AXFR = 252
 
-def create_msg(qid, mtype, rep_code, rr_q, rr_a):
-    msg = encode_bigendian(qid, 2)
-    flags = 0 | (mtype<<15) | (1<<5)
-    msg += encode_bigendian(flags, 2)
-    msg += encode_bigendian(len(rr_q), 2)
-    msg += encode_bigendian(len(rr_a), 2)
-    msg += encode_bigendian(0, 2)
-    msg += encode_bigendian(0, 2)
+def decode_bigendian(m):
+    ## input byte array. Output uint.
+    r = 0
+    for b in m:
+        r = r<<8 | b
+    return r
 
-    for rr in rr_q + rr_a:
-        msg += rr
-    return msg
+def encode_bigendian(r, l):
+    ## r: integer
+    ## l: length of bytearray
+    ## return bytearray bigendian
+    m = []
+    for i in range(l):
+        m.append(r&0xff)
+        r = r>>8
+    m.reverse()
+    return bytes(m)
+
+def create_msg(qid, rr):
+    msg = encode_bigendian(qid, 2)      # id
+    msg += encode_bigendian((1<<5), 2)  # flags
+    msg += encode_bigendian(1, 2)       # 1 query
+    msg += encode_bigendian(0, 6)       # empty other sections
+    return msg + rr
 
 def wrap_tcp(msg):
     # uPy doesn't support endianess yet...
@@ -91,7 +100,7 @@ def axfr(master, zone):
     axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     axfr_sock.connect((master, 53))
 
-    m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
+    m = create_msg(42, STAT_NOERR, \
 	    [make_query_rr(zone, TYPE_AXFR, 1)], [])
     m = wrap_tcp(m)
     axfr_sock.sendall(m)
@@ -108,7 +117,7 @@ def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
     axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     axfr_sock.connect((master, 53))
 
-    m = create_msg(42, TYPE_QUERY, STAT_NOERR, \
+    m = create_msg(42, STAT_NOERR, \
             [make_query_rr(zone, TYPE_AXFR, 1)], [])
     m = wrap_tcp(m)
     axfr_sock.sendall(m)
@@ -168,69 +177,82 @@ def uncompress(qowner, ptrs, ptrs_reslv):
             name += qowner[0: b+1]
             qowner = qowner[b+1:]
 
-# do stuff in functions to benefit GC
-try:
-    axfr_iter = axfr("10.0.0.10", "schaeffer.tk")
-except OSError as ex:
-    print("OSError: {0}".format(e))
-    print("Failed to obtain AXFR, rebooting in 5 seconds")
-    sleep(5)
-    machine.reset()
+def pop_db(host, zone):
+    try:
+        axfr_iter = axfr(host, zone)
+    except OSError as e:
+        print("OSError: {0}, rebooting".format(e))
+        sleep(5)
+        machine.reset()
 
-## we will now resolve compression ptrs by doing a axfr!
-db = {}
-to_resolve = {}
-ptrs = {}
-ptrs_reslv = set()
+    ## we will now resolve compression ptrs by doing a axfr!
+    db = {}
+    to_resolve = {}
+    ptrs = {}
+    ptrs_reslv = set()
 
 
-for rr in filter(weedwacker, axfr_iter):
-    _, qowner, qtype, _, ttl, rdata = rr
-    name, done = uncompress(qowner, ptrs, ptrs_reslv)
-    if done:
-        db[(name, qtype)] = (ttl, rdata)
-    else:
-        to_resolve[(name, qtype)] = (ttl, rdata)
-
-    #print(rr)
-
-#print(db, to_resolve, ptrs, ptrs_reslv)
-
-while ptrs_reslv:
-    axfr_reslv_ptrs("10.0.0.10", "schaeffer.tk", ptrs, sorted(list(ptrs_reslv)))
-    for p in ptrs.keys():
-        if p in ptrs_reslv:
-            ptrs_reslv.remove(p)
-
-    for k,v in to_resolve.items():
-        name, done = uncompress(k[0], ptrs, ptrs_reslv)
+    for rr in filter(weedwacker, axfr_iter):
+        _, qowner, qtype, _, _, rdata = rr
+        name, done = uncompress(qowner, ptrs, ptrs_reslv)
         if done:
-            db[(name, k[1])] = v
-            to_resolve.pop(k)
+            db[(name, qtype)] = rdata
+        else:
+            to_resolve[(name, qtype)] = rdata
 
-print(db)
+    while ptrs_reslv:
+        axfr_reslv_ptrs(host, zone, ptrs, sorted(list(ptrs_reslv)))
+        for p in ptrs.keys():
+            if p in ptrs_reslv:
+                ptrs_reslv.remove(p)
 
-del to_resolve
-del ptrs
-del ptrs_reslv
-del axfr_iter
-del rr
+        for k,v in to_resolve.items():
+            name, done = uncompress(k[0], ptrs, ptrs_reslv)
+            if done:
+                db[(name, k[1])] = v
+                to_resolve.pop(k)
 
-gc.collect()
+    return db
+
+db = pop_db("10.0.0.10", "schaeffer.tk")
+for rr in db:
+    print(rr[0], decode_bigendian(rr[1]))
 
 #Open UDP socket.
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 #bind to first IF. Fine I guess.
-addr = socket.getaddrinfo('0.0.0.0', 53)[0][-1]
-s.bind(addr)
+s.bind(socket.getaddrinfo('0.0.0.0', 53)[0][-1])
 
+from webrepl import start
+start()
 
 while 1: #while not recv packet of death ;)
     try:
         m, addr = s.recvfrom(1024)
+        mv = memoryview(m)
         #print("rcv pkt, sending to", str(addr), repr(addr))
-        s.sendto(m, addr)
-        #parse(m)
+        # find qname, from 
+        end = 12
+        while mv[end] != 0:
+            end += mv[end] + 1
+        qname = mv[12:end+1]
+        # find qtype
+        qtype = mv[end+1:end+3]
+        # now steal first 12 + (end-12) + 4 bytes of msg
+        # set response code and append RR 
+        resp = bytearray(m[:end+5])
+        resp[2] = 0x80 # is reply
+        if (bytes(qname), bytes(qtype)) in db: #note: do cnames!
+            pass
+        elif (bytes(qname), b'\x00\x05') in db: #note: do cnames!
+            print("CNAME!")
+            pass
+        else:
+            print("NXD")
+            resp[3] = 0x03 # NXD
+        for i in range(6, 12): # no other records
+            resp[i] = 0
+        s.sendto(resp, addr)
     except OSError as e:
         print("OSError: {0}".format(e))
         ## if the query rate is too high the ESP can't keep up
