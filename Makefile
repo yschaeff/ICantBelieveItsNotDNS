@@ -1,6 +1,6 @@
 CC=/home/yuri/repo/webrepl/webrepl_cli.py
-DST=185.49.140.179
-#DST=10.0.0.138
+#DST=185.49.140.179
+DST=10.0.0.138
 SOURCES=main.py boot.py trusted_networks.py net_utils.py
 OBJECTS=$(SOURCES:.py=.o)
 

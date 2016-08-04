@@ -2,11 +2,6 @@ import socket
 from time import sleep
 from machine import reset
 
-STAT_NOERR = 0
-STAT_REFUSED = 5
-
-TYPE_AXFR = 252
-
 def decode_bigendian(m):
     ## input byte array. Output uint.
     r = 0
@@ -25,23 +20,11 @@ def encode_bigendian(r, l):
     m.reverse()
     return bytes(m)
 
-def create_msg(qid, rr):
-    msg = encode_bigendian(qid, 2)      # id
-    msg += encode_bigendian((1<<5), 2)  # flags
-    msg += encode_bigendian(1, 2)       # 1 query
-    msg += encode_bigendian(0, 6)       # empty other sections
-    return msg + rr
-
 def name_to_wire(name):
     wire = b''
     for token in name.split('.'):
         wire += bytes(chr(len(token)) + token, 'utf8')
-    wire += b'\x00'
-    return wire
-
-def make_query_rr(qowner, qtype, qclass):
-    return name_to_wire(qowner) + encode_bigendian(qtype, 2) + \
-        encode_bigendian(qclass, 2)
+    return wire + b'\x00'
 
 ## contract: exactly 0 bytes must be read from name
 class RRiter:
@@ -89,9 +72,12 @@ def open_axfr(master, zone):
     print("Requesting AXFR for", zone, "from", master)
     axfr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     axfr_sock.connect((master, 53))
-    m = create_msg(42, make_query_rr(zone, TYPE_AXFR, 1))
-    m = encode_bigendian(len(m), 2) + m #we need len for TCP.
-    axfr_sock.sendall(m)
+    m = encode_bigendian(7, 2)      # id
+    m += encode_bigendian((1<<5), 2)  # flags
+    m += encode_bigendian(1, 2)       # 1 query
+    m += encode_bigendian(0, 6)       # empty other sections
+    m += name_to_wire(zone) + b'\x00\xFC\x00\x01' # AXFR IN
+    axfr_sock.sendall(encode_bigendian(len(m), 2) + m)
     axfr_sock.read(2) #aint nobody got mem for that.
     return axfr_sock
 
@@ -111,9 +97,8 @@ def axfr_reslv_ptrs(master, zone, ptrs, ptrs_to_reslv):
         if p < i:
             #we passed it :( unlikely, but possible
             continue
-        while i < p:
-            axfr_sock.read(1)
-            i += 1
+        axfr_sock.read(p-i)
+        i = p
         #read labels until 0 or ptr
         name = b''
         while 1:
@@ -157,6 +142,14 @@ def uncompress(qowner, ptrs, ptrs_reslv):
             name += qowner[0: b+1]
             qowner = qowner[b+1:]
 
+def find_ptr(name):
+    i = 0
+    while name[i] != 0x00:
+        if name[i]&0xC0 == 0xC0:
+            return (name[i]&0x3F)<<8 | name[i+1]
+        i += name[i] + 1
+    return -1
+
 def pop_db(host, zone):
     try:
         axfr_iter = axfr(host, zone)
@@ -165,37 +158,43 @@ def pop_db(host, zone):
         sleep(5)
         reset()
 
-    ## we will now resolve compression ptrs by doing a axfr!
-    db = {}
-    to_resolve = {}
-    ptrs = {}
-    ptrs_reslv = set()
-
-
+    records = []
     for rr in filter(weedwacker, axfr_iter):
-        _, qowner, qtype, _, _, rdata = rr
-        name, done = uncompress(qowner, ptrs, ptrs_reslv)
-        if done:
-            db[(name, qtype)] = rdata
-        else:
-            to_resolve[(name, qtype)] = rdata
-
-    while ptrs_reslv:
-        axfr_reslv_ptrs(host, zone, ptrs, sorted(list(ptrs_reslv)))
-        for p in ptrs.keys():
-            if p in ptrs_reslv:
-                ptrs_reslv.remove(p)
-
-        for k,v in to_resolve.items():
-            name, done = uncompress(k[0], ptrs, ptrs_reslv)
-            if done:
-                db[(name, k[1])] = v
-                to_resolve.pop(k)
-
+        _, qname, qtype, _, _, rdata = rr
+        records.append([qname, qtype, rdata, 0])
+    
+    resolved = False
+    ptrs = {}
+    reslv = set()
+    while not resolved:
+        for qname, qtype, rdata, _ in records:
+            p = find_ptr(qname)
+            if p != -1:
+                reslv.add(p)
+            if qtype == b'\x00\x05':
+                p = find_ptr(rdata[2:])
+                if p != -1: #CNAME
+                    reslv.add(p)
+        axfr_reslv_ptrs(host, zone, ptrs, sorted(list(reslv)))
+        resolved = True
+        for rr in records:
+            if rr[3]: continue
+            n, rdy = uncompress(rr[0], ptrs, reslv)
+            rr[0] = n
+            rr[3] = rdy
+            resolved &= rdy
+            if rr[1] == b'\x00\x05':
+                n, rdy = uncompress(rr[2][2:], ptrs, reslv)
+                rr[2] = encode_bigendian(len(n), 2) + n
+                rr[3] &= rdy
+                resolved &= rdy
+    db = {}
+    for qname, qtype, rdata, _ in records:
+        db[(qname, qtype)] = rdata
     return db
 
-#db = pop_db("10.0.0.10", "schaeffer.tk")
-db = pop_db("83.162.28.200", "schaeffer.tk")
+db = pop_db("10.0.0.10", "schaeffer.tk")
+#db = pop_db("83.162.28.200", "schaeffer.tk")
 for rr in db:
     print(rr[0], decode_bigendian(rr[1]))
 
