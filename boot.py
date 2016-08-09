@@ -1,10 +1,16 @@
 # This file is executed on every boot (including wake-boot from deepsleep)
 import gc
 
-## This creates a wifi connection with
-## any of our know access points
 from trusted_networks import NETWORKS
 
+#NETWORKS = {
+#    "essid":"password",
+#    "essid":"password",
+#    "essid":"password"
+#}
+
+## This creates a wifi connection with
+## any of our known access points
 def connect_to_ap(essids, tries=3):
     from network import WLAN, STA_IF
     from time import sleep
@@ -27,8 +33,5 @@ def connect_to_ap(essids, tries=3):
     return False
 
 connect_to_ap(NETWORKS)
-
-#from webrepl import start
-#start()
 
 gc.collect()

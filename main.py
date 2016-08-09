@@ -2,6 +2,9 @@ import socket
 from time import sleep
 from machine import reset
 
+MASTER = "10.0.0.10"
+ZONE = "schaeffer.tk"
+
 def decode_bigendian(m):
     ## input byte array. Output uint.
     r = 0
@@ -32,7 +35,7 @@ class RRiter:
         self.sock = sock
 
     def __iter__(self):
-	## seek to answer section
+        ## seek to answer section
         qu_count = decode_bigendian(self.sock.read(2))
         an_count = decode_bigendian(self.sock.read(2))
         au_count = decode_bigendian(self.sock.read(2))
@@ -143,6 +146,7 @@ def uncompress(qowner, ptrs, ptrs_reslv):
             qowner = qowner[b+1:]
 
 def find_ptr(name):
+    ## returns value of pointer in name. Or -1 if no pointer.
     i = 0
     while name[i] != 0x00:
         if name[i]&0xC0 == 0xC0:
@@ -150,7 +154,7 @@ def find_ptr(name):
         i += name[i] + 1
     return -1
 
-def pop_db(host, zone):
+def populate_db(host, zone):
     try:
         axfr_iter = axfr(host, zone)
     except OSError as e:
@@ -162,7 +166,7 @@ def pop_db(host, zone):
     for rr in filter(weedwacker, axfr_iter):
         _, qname, qtype, _, _, rdata = rr
         records.append([qname, qtype, rdata, 0])
-    
+
     resolved = False
     ptrs = {}
     reslv = set()
@@ -193,8 +197,7 @@ def pop_db(host, zone):
         db[(qname, qtype)] = rdata
     return db
 
-db = pop_db("10.0.0.10", "schaeffer.tk")
-#db = pop_db("83.162.28.200", "schaeffer.tk")
+db = populate_db(MASTER, ZONE)
 for rr in db:
     print(rr[0], decode_bigendian(rr[1]))
 
@@ -209,19 +212,31 @@ start()
 while 1: #while not recv packet of death ;)
     try:
         m, addr = s.recvfrom(1024)
-        #print("rcv pkt, sending to", str(addr), repr(addr))
-        # find qname, from 
+
+        # Packet of death:
+        #   query, notify
+        # We don't want to do any SOA serial management. Nor ACLs or
+        # TSIG. Just reboot and retransfer zone.
+        if (m[2]$0xF8) == 0x20:
+            reset()
+
+        # find qname. Falsely assume this cannot be compressed.
         end = 12
-        while m[end] != 0:
+        while m[end] != 0x00:
             end += m[end] + 1
         qname = m[12:end+1]
+
         # find qtype
         qtype = m[end+1:end+3]
+
         # now steal first 12 + (end-12) + 4 bytes of msg
-        # set response code and append RR 
-        resp = bytearray(m[:end+5])
+        # set response code and append RR
+        resp = bytearray(m[:end+5]) #
         resp[2] = (resp[2]&0x01)|0x84 # is reply
-        resp[3] &= 0x10
+        resp[3] &= 0x10 # AD
+        for i in range(8, 12): # no auth or additional
+            resp[i] = 0
+
         rdata = db.get((qname, qtype))
         if not rdata: #look for cname then
             rdata = db.get((qname, b'\x00\x05'))
@@ -235,8 +250,7 @@ while 1: #while not recv packet of death ;)
             resp += b'\x00\x01' # IN
             resp += b'\x00\x00\x03\x84' #900S TTL
             resp += rdata
-        for i in range(8, 12): # no other records
-            resp[i] = 0
+
         s.sendto(resp, addr)
     except OSError as e:
         print("OSError: {0}".format(e))
