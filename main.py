@@ -217,7 +217,7 @@ while 1: #while not recv packet of death ;)
         #   query, notify
         # We don't want to do any SOA serial management. Nor ACLs or
         # TSIG. Just reboot and retransfer zone.
-        if (m[2]$0xF8) == 0x20:
+        if (m[2]&0xF8) == 0x20:
             reset()
 
         # find qname. Falsely assume this cannot be compressed.
