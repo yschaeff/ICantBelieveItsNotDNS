@@ -1,6 +1,6 @@
 import socket
 from time import sleep
-from machine import reset
+from machine import reset, Pin
 
 MASTER = "10.0.0.10"
 ZONE = "schaeffer.tk"
@@ -209,9 +209,17 @@ s.bind(socket.getaddrinfo('0.0.0.0', 53)[0][-1])
 from webrepl import start
 start()
 
+led = Pin(2, Pin.OUT)
+led.value(0)
+ledstate = 1
+
 while 1: #while not recv packet of death ;)
     try:
         m, addr = s.recvfrom(1024)
+
+        # Toggle a LED
+        led.value(ledstate)
+        ledstate ^= 1
 
         # Packet of death:
         #   query, notify
