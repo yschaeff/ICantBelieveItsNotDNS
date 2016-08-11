@@ -31,7 +31,7 @@ dictionary of ESSID and password combinations. The latter is not included in
 the git repository and you should create one yourself (see boot.py).
 
 The other thing you need to edit before uploading the files is the first few
-lines of main.py. There the zone as well as the master server to get it from is
+lines of main.py. There the zone as well as the master server to get it from are
 defined.
 
 For convenience a Makefile is included. Though in order to use it you probably
@@ -78,7 +78,7 @@ Plan B
 ---
 What if we don't resolve the compression pointers during the AXFR? That's right,
 just let them sit unresolved for a bit. In the mean time drop all those pesky
-DNSSEC records we are offered. Those are to big anyway and I really don't to
+DNSSEC records we are offered. Those are to big anyway and I really don't want to
 deal with NSEC lookups on this tiny device. Also, while we are at it drop
 anything other than class IN, that does not exist in my world. We end up with
 just a small set of records.  But how do we resolve the owner names, we don't
@@ -95,7 +95,7 @@ Serving Queries
 This is the easy part. Lets do as little as possible. When a query comes in we
 chop of anything beyond the question section. BAM! We have most of our reply
 done.  Fiddle a bit with the flags and section counts, assume query name is
-uncompressed and append our resource record. Our database only contains TYPE an
+uncompressed and append our resource record. Our database only contains TYPE and
 RDATA. Query name?  Always a pointer to byte 12 in the packet. Class? always
 IN. TLL? always 15 minutes, deal with it.
 
