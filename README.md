@@ -21,7 +21,7 @@ NodeMCU) could do _almost_ 2 qps. That project quickly stopped.
 I was excited when MicroPython came out and decided to start a similar project.
 MicroPython was much more capable than Lua and I got 150 to 160 qps! Soon I hit
 limitations on memory consumption and code size. To get it running I needed to
--cut-some-corners- highly optimize the code.
+~~cut some corners~~ highly optimize the code.
 
 Introduction
 ---
