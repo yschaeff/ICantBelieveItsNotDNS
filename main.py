@@ -187,14 +187,14 @@ def populate_db(host, zone):
             rr[0] = n
             rr[3] = rdy
             resolved &= rdy
-            if rr[1] == b'\x00\x05':
+            if rr[1] in [b'\x00\x02', b'\x00\x05']:
                 n, rdy = uncompress(rr[2][2:], ptrs, reslv)
                 rr[2] = encode_bigendian(len(n), 2) + n
                 rr[3] &= rdy
                 resolved &= rdy
     db = {}
     for qname, qtype, rdata, _ in records:
-        db[(qname, qtype)] = rdata
+        db.setdefault((qname, qtype), []).append(rdata)
     return db
 
 db = populate_db(MASTER, ZONE)
@@ -242,20 +242,20 @@ while 1: #while not recv packet of death ;)
         for i in range(8, 12): # no auth or additional
             resp[i] = 0
 
-        rdata = db.get((qname, qtype))
-        if not rdata: #look for cname then
-            rdata = db.get((qname, b'\x00\x05'))
+        rdatas = db.get((qname, qtype))
+        if not rdatas: #look for cname then
+            rdatas = db.get((qname, b'\x00\x05'))
             qtype = b'\x00\x05'
-        if not rdata: #NXD
+        if not rdatas: #NXD
             resp[3] |= 0x03 # NXD
         else:
-            resp[7] = 0x01 #always 1 anser
-            resp += b'\xC0\x0C' #always point to question for qname
-            resp += qtype
-            resp += b'\x00\x01' # IN
-            resp += b'\x00\x00\x03\x84' #900S TTL
-            resp += rdata
-
+            resp[7] = len(rdatas)
+            for rdata in rdatas:
+                resp += b'\xC0\x0C' #always point to question for qname
+                resp += qtype
+                resp += b'\x00\x01' # IN
+                resp += b'\x00\x00\x03\x84' #900S TTL
+                resp += rdata
         s.sendto(resp, addr)
     except KeyboardInterrupt as e:
         from webrepl import start
