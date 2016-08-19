@@ -166,6 +166,8 @@ def populate_db(host, zone):
     for rr in filter(weedwacker, axfr_iter):
         _, qname, qtype, _, _, rdata = rr
         records.append([qname, qtype, rdata, 0])
+    #last one is second SOA. Don't need it.
+    _ = records.pop()
 
     resolved = False
     ptrs = {}
